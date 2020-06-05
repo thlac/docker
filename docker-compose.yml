@@ -1,0 +1,433 @@
+version: "3.7"
+services:
+  # Traefik: Web Load balancer
+  # Reverse Proxy + Load Balancer for internal services
+  traefik:
+    depends_on:
+      - traefik-forward-auth
+    container_name: traefik
+    image: traefik:latest
+    command:
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--providers.file=true"
+      - "--providers.file.filename=/etc/traefik/dynamic_conf.toml"
+      - "--providers.file.watch=true"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.docker.watch=true"
+      - "--entrypoints.http.address=:80"
+      - "--entrypoints.https.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare"
+      - "--certificatesresolvers.letsencrypt.acme.email=${EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/etc/traefik/acme.json"
+      - "--serverstransport.insecureskipverify=true"
+      # LetsEncrypt staging server, only use for testing
+      #- "--certificatesresolvers.letsencrypt.acme.caServer=https://acme-staging-v02.api.letsencrypt.org/directory"
+    environment: 
+      - CF_API_EMAIL=${EMAIL}
+      - CF_API_KEY=${CLOUDFLARE_TOKEN}
+    restart: unless-stopped
+    networks: 
+      - traefik
+      - traefik_external
+    ports:
+      - 80:80
+      - 443:443
+      - 8080:8080
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${MOUNTPOINT}/apps/traefik:/etc/traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.traefik.loadbalancer.server.port=8080
+      - traefik.http.routers.traefik.entryPoints=https
+      - traefik.http.routers.traefik.rule=host(`traefik.${DOMAIN}`)
+      - traefik.http.routers.traefik.middlewares=sso@file
+      - traefik.http.routers.traefik.tls=true
+      - traefik.http.routers.traefik.tls.certResolver=letsencrypt
+      - traefik.http.routers.traefik.tls.domains[0].main=${DOMAIN}
+      - traefik.http.routers.traefik.tls.domains[0].sans=*.${DOMAIN}
+
+  # Put our internal resources behind OpenID providers like Google
+  traefik-forward-auth:
+    container_name: traefik-forward-auth
+    image: thomseddon/traefik-forward-auth:latest
+    restart: unless-stopped
+    volumes: 
+      - ${MOUNTPOINT}/apps/traefik-forward-auth/forward.ini:/forward.ini
+    environment:
+      - CONFIG=/forward.ini
+    networks: 
+      - traefik
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.traefik-forward-auth.loadBalancer.server.port=4181
+      - traefik.http.routers.traefik-forward-auth.entryPoints=https
+      - traefik.http.routers.traefik-forward-auth.rule=host(`auth.${DOMAIN}`)
+      - traefik.http.routers.traefik-forward-auth.middlewares=sso@file
+      - traefik.http.routers.traefik-forward-auth.tls=true
+      - traefik.http.routers.traefik-forward-auth.tls.certResolver=letsencrypt
+ 
+  # Portainer: Docker Container Management
+  portainer:
+    container_name: portainer
+    image: portainer/portainer
+    restart: unless-stopped
+    networks: 
+      - traefik
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${MOUNTPOINT}/apps/portainer:/data
+    environment:
+      - TZ=${TZ}
+    labels:
+    - traefik.enable=true
+    - traefik.http.services.portainer.loadBalancer.server.port=9000
+    - traefik.http.routers.portainer.entryPoints=https
+    - traefik.http.routers.portainer.rule=host(`portainer.${DOMAIN}`)
+    - traefik.http.routers.portainer.middlewares=sso@file
+    - traefik.http.routers.portainer.tls=true
+    - traefik.http.routers.portainer.tls.certResolver=letsencrypt
+
+  # Watchtower: Don't bite your own tail
+  watchtower:
+    container_name: watchtower
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # nginx container serving web content for website
+  website:
+    container_name: website
+    image: nginx:latest
+    restart: unless-stopped
+    networks: 
+      - traefik
+    volumes:
+      - ${MOUNTPOINT}/apps/web:/usr/share/nginx/html:ro
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.website.entryPoints=https
+      - traefik.http.routers.website.rule=host(`${DOMAIN}`)
+      - traefik.http.routers.website.middlewares=without-sso@file
+      - traefik.http.routers.website.tls=true
+      - traefik.http.routers.website.tls.certResolver=letsencrypt
+
+  # Sonarr: Manage TV Shows
+  sonarr:
+    container_name: sonarr
+    image: linuxserver/sonarr
+    restart: unless-stopped
+    networks:
+      - traefik
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${MOUNTPOINT}/apps/sonarr:/config
+      - ${MOUNTPOINT}/media/tv:/tv
+      - ${MOUNTPOINT}/media/downloads:/downloads
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.sonarr.loadbalancer.server.port=8989
+      - traefik.http.routers.sonarr.entryPoints=https
+      - traefik.http.routers.sonarr.rule=host(`sonarr.${DOMAIN}`)
+      - traefik.http.routers.sonarr.middlewares=sso@file
+      - traefik.http.routers.sonarr.tls=true
+      - traefik.http.routers.sonarr.tls.certResolver=letsencrypt
+
+  # Radarr: Manage Movies
+  radarr:
+    container_name: radarr
+    image: linuxserver/radarr
+    restart: unless-stopped
+    networks:
+      - traefik
+    volumes:
+      - ${MOUNTPOINT}/apps/radarr:/config
+      - ${MOUNTPOINT}/media/movies:/movies
+      - ${MOUNTPOINT}/media/downloads:/downloads
+    environment:
+      - PGID=${PGID}
+      - PUID=${PUID}
+      - TZ=${TZ}
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.radarr.loadbalancer.server.port=7878
+      - traefik.http.routers.radarr.entryPoints=https
+      - traefik.http.routers.radarr.rule=host(`radarr.${DOMAIN}`)
+      - traefik.http.routers.radarr.middlewares=sso@file
+      - traefik.http.routers.radarr.tls=true
+      - traefik.http.routers.radarr.tls.certResolver=letsencrypt
+
+  # Jackett: Torrent Search/Aggregator
+  jackett:
+    container_name: jackett
+    image: linuxserver/jackett
+    restart: unless-stopped
+    networks:
+      - traefik
+    volumes:
+      - ${MOUNTPOINT}/apps/jackett:/config
+      - ${MOUNTPOINT}/media/downloads/watch:/downloads
+    environment:
+      - PGID=${PGID}
+      - PUID=${PUID}
+      - TZ=${TZ}
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.jackett.loadbalancer.server.port=9117
+      - traefik.http.routers.jackett.entryPoints=https
+      - traefik.http.routers.jackett.rule=host(`jackett.${DOMAIN}`)
+      - traefik.http.routers.jackett.middlewares=sso@file
+      - traefik.http.routers.jackett.tls=true
+      - traefik.http.routers.jackett.tls.certResolver=letsencrypt
+
+  # Transmission: Torrent downloading
+  transmission:
+    container_name: transmission
+    image: linuxserver/transmission
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - TRANSMISSION_WEB_HOME=/combustion-release/ #optional
+    volumes:
+      - ${MOUNTPOINT}/apps/transmission:/config
+      - ${MOUNTPOINT}/media/downloads:/downloads
+      - ${MOUNTPOINT}/media/downloads/watch:/watch
+    networks:
+      - traefik
+    ports:
+      - 51413:51413
+      - 51413:51413/udp
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.transmission.loadbalancer.server.port=9091
+      - traefik.http.routers.transmission.entryPoints=https
+      - traefik.http.routers.transmission.rule=host(`transmission.${DOMAIN}`)
+      - traefik.http.routers.transmission.middlewares=sso@file
+      - traefik.http.routers.transmission.tls=true
+      - traefik.http.routers.transmission.tls.certResolver=letsencrypt
+
+  # Plex: TV & Movies, coming to a Cloudflare CDN near you
+  plex:
+    container_name: plex
+    hostname: ${COMPOSE_PROJECT_NAME}
+    image: plexinc/pms-docker:plexpass
+    restart: unless-stopped
+    networks:
+      - traefik
+    ports:
+      - 32400:32400/tcp
+      - 3005:3005/tcp
+      - 8324:8324/tcp
+      - 32469:32469/tcp
+      - 1900:1900/udp
+      - 32410:32410/udp
+      - 32412:32412/udp
+      - 32413:32413/udp
+      - 32414:32414/udp
+    devices: 
+    # For quicksync transcode
+      - /dev/dri:/dev/dri
+    volumes:
+      - ${MOUNTPOINT}/apps/plex/config:/config
+      - ${MOUNTPOINT}/media/movies:/data/movies
+      - ${MOUNTPOINT}/media/tv:/data/tv
+      - ${MOUNTPOINT}/media/other:/data/other
+      - ${MOUNTPOINT}/apps/plex/transcode:/transcode
+    environment:
+      - ADVERTISE_IP=${PLEX_URL}
+      - PLEX_GID=${PGIDVIDEO}
+      - PLEX_UID=${PUID}
+      - PLEX_CLAIM=${PLEX_CLAIM}
+      - TZ=${TZ}
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.plex.loadbalancer.server.port=32400
+      - traefik.http.routers.plex.entryPoints=https
+      - traefik.http.routers.plex.rule=host(`plex.${DOMAIN}`)
+      - traefik.http.routers.plex.middlewares=without-sso@file
+      - traefik.http.routers.plex.tls=true
+      - traefik.http.routers.plex.tls.certResolver=letsencrypt
+  
+  # Home Assistant: Automation and Spying in one convenient package.
+  homeassistant:
+    container_name: homeassistant
+    image: homeassistant/home-assistant
+    restart: unless-stopped
+    #network_mode: host
+    networks:
+      traefik:
+      zhass:
+        ipv4_address: ${HASS_IP}
+    volumes: 
+      - ${MOUNTPOINT}/apps/hass:/config
+      - /etc/localtime:/etc/localtime:ro
+    environment: 
+      - TZ=${TZ}
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${COMPOSE_PROJECT_NAME}_traefik
+      - traefik.http.services.homeassistant.loadbalancer.server.port=8123
+      - traefik.http.routers.homeassistant.entryPoints=https
+      - traefik.http.routers.homeassistant.rule=Host(`home.${DOMAIN}`)
+      - traefik.http.routers.homeassistant.middlewares=without-sso@file
+      - traefik.http.routers.homeassistant.tls=true
+      - traefik.http.routers.homeassistant.tls.certResolver=letsencrypt
+
+  # Home Assistant Configurator: Throw a wrench in it
+  homeassistant_configurator:
+    container_name: homeassistant_configurator
+    image: danielperna84/hass-configurator
+    restart: unless-stopped
+    networks:
+      - traefik
+    volumes: 
+      - ${MOUNTPOINT}/apps/hass:/config
+      - ${MOUNTPOINT}/apps/hass_configurator:/data
+    environment: 
+      - HC_HASS_API=${HASS_API}
+      - HC_HASS_API_PASSWORD=${HASS_API_PASSWORD}
+    labels: 
+      - traefik.enable=true
+      - traefik.http.services.configurator.loadbalancer.server.port=3218
+      - traefik.http.routers.configurator.entryPoints=https
+      - traefik.http.routers.configurator.rule=host(`configurator.${DOMAIN}`)
+      - traefik.http.routers.configurator.middlewares=sso@file
+      - traefik.http.routers.configurator.tls=true
+      - traefik.http.routers.configurator.tls.certResolver=letsencrypt      
+
+  tautulli:
+    image: linuxserver/tautulli
+    container_name: tautulli
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    networks: 
+      - traefik
+    volumes:
+      - ${MOUNTPOINT}/apps/tautulli:/config
+      - ${MOUNTPOINT}/apps/plex/config/Library/Application Support/Plex Media Server/Logs:/logs:ro
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.tautulli.loadbalancer.server.port=8181
+      - traefik.http.routers.tautulli.entryPoints=https
+      - traefik.http.routers.tautulli.rule=host(`tautulli.${DOMAIN}`)
+      - traefik.http.routers.tautulli.middlewares=sso@file
+      - traefik.http.routers.tautulli.tls=true
+      - traefik.http.routers.tautulli.tls.certResolver=letsencrypt
+
+  ha_dockermon:
+    image: philhawthorne/ha-dockermon
+    container_name: ha_dockermon
+    networks:
+      - traefik
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    labels: 
+    - "traefik.enable=false"
+
+  thelounge:
+    image: thelounge/thelounge:latest
+    container_name: thelounge
+    networks: 
+      - traefik
+    restart: unless-stopped
+    volumes:
+      - ${MOUNTPOINT}/apps/thelounge:/var/opt/thelounge # bind lounge config from the host's file 
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.thelounge.loadbalancer.server.port=9000
+      - traefik.http.routers.thelounge.entryPoints=https
+      - traefik.http.routers.thelounge.rule=host(`irc.${DOMAIN}`)
+      - traefik.http.routers.thelounge.middlewares=without-sso@file
+      - traefik.http.routers.thelounge.tls=true
+      - traefik.http.routers.thelounge.tls.certResolver=letsencrypt
+
+  vscode:
+    image: codercom/code-server
+    container_name: coder
+    command: "code-server --allow-http --auth none"
+    user: root
+    networks:
+      - traefik
+    restart: unless-stopped
+    volumes: 
+      - ${MOUNTPOINT}/apps/hass:/home/coder/hass
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.coder.loadbalancer.server.port=8080
+      - traefik.http.routers.coder.entryPoints=https
+      - traefik.http.routers.coder.rule=host(`coder.${DOMAIN}`)
+      - traefik.http.routers.coder.middlewares=sso@file
+      - traefik.http.routers.coder.tls=true
+      - traefik.http.routers.coder.tls.certResolver=letsencrypt
+
+  unifi-controller:
+    image: linuxserver/unifi-controller
+    container_name: unifi-controller
+    restart: unless-stopped
+    networks:
+      traefik:
+      zhass:
+        ipv4_address: ${UNIFI_IP}
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - MEM_LIMIT=1024M
+    volumes:
+      - ${MOUNTPOINT}/apps/unifi:/config
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.unifi.loadbalancer.server.port=8443
+      - traefik.http.services.unifi.loadbalancer.server.scheme=https
+      - traefik.http.routers.unifi.entryPoints=https
+      - traefik.http.routers.unifi.rule=host(`unifi.${DOMAIN}`)
+      - traefik.http.routers.unifi.middlewares=sso@file
+      - traefik.http.routers.unifi.tls=true
+      - traefik.http.routers.unifi.tls.certResolver=letsencrypt
+
+  restreamer:
+    image: datarhei/restreamer
+    container_name: restreamer
+    restart: unless-stopped
+    networks:
+      - traefik
+    ports:
+      - 1935:1935
+    environment:
+      - RS_TOKEN=${RS_TOKEN}
+      - RS_USERNAME=${RS_USERNAME}
+      - RS_PASSWORD=${RS_PASSWORD}
+    volumes:
+      - ${MOUNTPOINT}/apps/restreamer:/restreamer/db
+    labels:
+      - traefik.enable=true
+      - traefik.http.services.restreamer.loadbalancer.server.port=8080
+      - traefik.http.routers.restreamer.entryPoints=https
+      - traefik.http.routers.restreamer.rule=host(`taxpayer.${DOMAIN}`)
+      - traefik.http.routers.restreamer.middlewares=sso@file
+      - traefik.http.routers.restreamer.tls=true
+      - traefik.http.routers.restreamer.tls.certResolver=letsencrypt
+
+# Network Settings
+networks:
+  traefik:
+  traefik_external:
+  zhass:
+    driver: macvlan
+    driver_opts:
+      parent: ${NET_ADAPTER}
+    ipam:
+      config:
+        - subnet: ${IPAM_SUBNET}
