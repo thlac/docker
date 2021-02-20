@@ -73,7 +73,7 @@ services:
   # Portainer: Docker Container Management
   portainer:
     container_name: portainer
-    image: portainer/portainer
+    image: portainer/portainer-ce
     restart: unless-stopped
     networks: 
       - traefik
@@ -119,7 +119,7 @@ services:
   # Sonarr: Manage TV Shows
   sonarr:
     container_name: sonarr
-    image: linuxserver/sonarr
+    image: linuxserver/sonarr:preview
     restart: unless-stopped
     networks:
       - traefik
@@ -353,26 +353,7 @@ services:
       - traefik.http.routers.thelounge.middlewares=without-sso@file
       - traefik.http.routers.thelounge.tls=true
       - traefik.http.routers.thelounge.tls.certResolver=letsencrypt
-
-  vscode:
-    image: codercom/code-server
-    container_name: coder
-    command: "code-server --allow-http --auth none"
-    user: root
-    networks:
-      - traefik
-    restart: unless-stopped
-    volumes: 
-      - ${MOUNTPOINT}/apps/hass:/home/coder/hass
-    labels:
-      - traefik.enable=true
-      - traefik.http.services.coder.loadbalancer.server.port=8080
-      - traefik.http.routers.coder.entryPoints=https
-      - traefik.http.routers.coder.rule=host(`coder.${DOMAIN}`)
-      - traefik.http.routers.coder.middlewares=sso@file
-      - traefik.http.routers.coder.tls=true
-      - traefik.http.routers.coder.tls.certResolver=letsencrypt
-
+      
   unifi-controller:
     image: linuxserver/unifi-controller
     container_name: unifi-controller
@@ -397,28 +378,51 @@ services:
       - traefik.http.routers.unifi.tls=true
       - traefik.http.routers.unifi.tls.certResolver=letsencrypt
 
-  restreamer:
-    image: datarhei/restreamer
-    container_name: restreamer
-    restart: unless-stopped
+  mosquitto:
+    image: eclipse-mosquitto
+    container_name: mosquitto
     networks:
       - traefik
-    ports:
-      - 1935:1935
-    environment:
-      - RS_TOKEN=${RS_TOKEN}
-      - RS_USERNAME=${RS_USERNAME}
-      - RS_PASSWORD=${RS_PASSWORD}
     volumes:
-      - ${MOUNTPOINT}/apps/restreamer:/restreamer/db
+      - ${MOUNTPOINT}/apps/mosquitto/data:/mosquitto/data
+      - ${MOUNTPOINT}/apps/mosquitto/logs:/mosquitto/logs
+      - ${MOUNTPOINT}/apps/mosquitto/config:/mosquitto/config
+    restart: unless-stopped
+
+  zigbee2mqtt:
+    container_name: zigbee2mqtt
+    image: koenkk/zigbee2mqtt
+    networks:
+      traefik:
+      zhass:
+        ipv4_address: ${ZIGBEE2MQTT_IP}
+    volumes:
+      - ${MOUNTPOINT}/apps/zigbee2mqtt:/app/data
+        #      - /run/udev:/run/udev:ro
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+    restart: unless-stopped
+    #    privileged: true
+    environment:
+      - TZ=Europe/Copenhagen
+
+  zigbee2mqttAssistant:
+    image: carldebilly/zigbee2mqttassistant
+    container_name: zigbee2mqttAssistant
+    environment:
+      - Z2MA_SETTINGS__MQTTSERVER=mosquitto
+      - TZ=Europe/Copenhagen
+    networks:
+      - traefik
+    restart: unless-stopped
     labels:
       - traefik.enable=true
-      - traefik.http.services.restreamer.loadbalancer.server.port=8080
-      - traefik.http.routers.restreamer.entryPoints=https
-      - traefik.http.routers.restreamer.rule=host(`taxpayer.${DOMAIN}`)
-      - traefik.http.routers.restreamer.middlewares=sso@file
-      - traefik.http.routers.restreamer.tls=true
-      - traefik.http.routers.restreamer.tls.certResolver=letsencrypt
+      - traefik.http.services.zigbee.loadbalancer.server.port=80
+      - traefik.http.routers.zigbee.entryPoints=https
+      - traefik.http.routers.zigbee.rule=host(`zigbee.${DOMAIN}`)
+      - traefik.http.routers.zigbee.middlewares=sso@file
+      - traefik.http.routers.zigbee.tls=true
+      - traefik.http.routers.zigbee.tls.certResolver=letsencrypt
 
 # Network Settings
 networks:
