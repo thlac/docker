@@ -20,13 +20,13 @@ services:
       - "--entrypoints.https.address=:443"
       - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
       - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=cloudflare"
-      - "--certificatesresolvers.letsencrypt.acme.email=${EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.email=${CLOUDFLARE_EMAIL}"
       - "--certificatesresolvers.letsencrypt.acme.storage=/etc/traefik/acme.json"
       - "--serverstransport.insecureskipverify=true"
       # LetsEncrypt staging server, only use for testing
       #- "--certificatesresolvers.letsencrypt.acme.caServer=https://acme-staging-v02.api.letsencrypt.org/directory"
     environment: 
-      - CF_API_EMAIL=${EMAIL}
+      - CF_API_EMAIL=${CLOUDFLARE_EMAIL}
       - CF_API_KEY=${CLOUDFLARE_TOKEN}
     restart: unless-stopped
     networks: 
@@ -119,7 +119,7 @@ services:
   # Sonarr: Manage TV Shows
   sonarr:
     container_name: sonarr
-    image: linuxserver/sonarr:preview
+    image: linuxserver/sonarr:latest
     restart: unless-stopped
     networks:
       - traefik
